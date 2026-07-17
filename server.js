@@ -63,7 +63,7 @@ app.post('/api/ai/complete', apiLimiter, async (req, res) => {
   if (!prompt) return res.status(400).json({ error: 'prompt required' });
   try {
     const msg = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5',
       max_tokens,
       messages: [{ role: 'user', content: prompt }],
     });
