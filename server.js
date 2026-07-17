@@ -16,13 +16,19 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-app.use(helmet());
-app.use(cors({ origin: '*', credentials: true }));
+// ── CORS — allow all origins (fix for Vercel → Render) ──
+app.use(cors({
+  origin: '*',
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+}));
+app.options('*', cors());
+
+app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json({ limit: '1mb' }));
 
-const authLimiter  = rateLimit({ windowMs: 15*60*1000, max: 20 });
-const apiLimiter   = rateLimit({ windowMs: 60*1000, max: 60 });
-const agentLimiter = rateLimit({ windowMs: 60*1000, max: 10 });
+const authLimiter  = rateLimit({ windowMs: 15*60*1000, max: 50 });
+const apiLimiter   = rateLimit({ windowMs: 60*1000, max: 100 });
 
 function requireAuth(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
@@ -50,7 +56,7 @@ const BusinessSchema = z.object({
 });
 
 // ════════════════════════════════════
-// AI PROXY — keeps API key on server
+// AI PROXY — main endpoint for all AI
 // ════════════════════════════════════
 app.post('/api/ai/complete', apiLimiter, async (req, res) => {
   const { prompt, max_tokens = 1000 } = req.body;
@@ -64,7 +70,7 @@ app.post('/api/ai/complete', apiLimiter, async (req, res) => {
     res.json({ text: msg.content[0].text });
   } catch (e) {
     console.error('AI error:', e.message);
-    res.status(500).json({ error: 'AI unavailable' });
+    res.status(500).json({ error: 'AI unavailable', detail: e.message });
   }
 });
 
@@ -113,14 +119,14 @@ function computeMetrics(d) {
   const mbe=(d.growth>0&&beu>d.customers)?Math.ceil((beu-d.customers)/(d.customers*d.growth/100)):0;
   const rpc=d.customers>0?d.revenue/d.customers:0;
   const ltv=(d.avgPrice*12)*(cmPct/100), cac=d.avgPrice*0.4;
-  const ltvCac=cac>0?ltv/cac:0, cacPb=cm>0?Math.ceil(cac/cm):0;
+  const ltvCac=cac>0?ltv/cac:0;
   const burn=np<0?Math.abs(np):d.monthlyBurn, runway=burn>0?d.capital/burn:999;
   const oli=(d.revenue-d.fixedCosts)!==0?d.revenue/(d.revenue-d.fixedCosts):0;
   let cr='N/A',cl='gray';
   if(d.s1!==undefined){const mx=Math.max(d.s1||0,d.s2||0,d.s3||0);cr=mx>=70?'HIGH':mx>=50?'MEDIUM':'LOW';cl=mx>=70?'red':mx>=50?'orange':'green';}
   const grs=Math.min(100,Math.max(0,Math.round((gm>60?20:gm>30?12:6)+(ltvCac>3?20:ltvCac>1?12:5)+(runway>12?20:runway>6?12:4)+(om>15?20:om>0?12:0)+(cr==='LOW'?20:cr==='MEDIUM'?10:0))));
   const ss=Math.min(100,Math.max(0,Math.round((gm*0.25)+(ltvCac*5)+(om*0.5)+(runway>6?20:runway*3)+(cr==='LOW'?5:cr==='MEDIUM'?2:0))));
-  return {np,gm,om,fcb,cm,cmPct,tvc,tc,beu,ber,mbe,rpc,ltv,cac,ltvCac,cacPb,burn,runway,oli,cr,cl,grs,ss};
+  return {np,gm,om,fcb,cm,cmPct,tvc,tc,beu,ber,mbe,rpc,ltv,cac,ltvCac,burn,runway,oli,cr,cl,grs,ss};
 }
 
 app.post('/api/analyse/basic', requireAuth, apiLimiter, async (req, res) => {
@@ -139,7 +145,7 @@ app.get('/api/analyses', requireAuth, async (req, res) => {
 });
 
 // ════════════════════════════════════
-// BILLING — Stripe
+// BILLING
 // ════════════════════════════════════
 app.post('/api/billing/checkout', requireAuth, async (req, res) => {
   const { data: user } = await supabase.from('users').select('email,stripe_customer_id').eq('id', req.user.id).single();
@@ -177,7 +183,7 @@ app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), asyn
 });
 
 // ════════════════════════════════════
-// HEALTH CHECK
+// HEALTH
 // ════════════════════════════════════
 app.get('/api/health', (_, res) => res.json({ status: 'ok', version: '4.1.0' }));
 
